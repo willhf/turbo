@@ -23,3 +23,19 @@ from app.authors where name = 'Sofia Duarte';
 
 insert into app.books (author_id, title)
 values (null, 'Orphaned Manuscript');
+
+insert into app.chapters (book_id, title)
+select id, 'Chapter 1: Clockwork'
+from app.books where title = 'The Clockwork Harbor';
+
+insert into app.chapters (book_id, title)
+select id, 'Chapter 2: Harbor'
+from app.books where title = 'The Clockwork Harbor';
+
+insert into app.chapters (book_id, title)
+select id, 'Chapter 1: Shadows'
+from app.books where title = 'Shadows in Amber';
+
+insert into app.chapters (book_id, title)
+select id, 'Chapter 2: Amber'
+from app.books where title = 'Shadows in Amber';
