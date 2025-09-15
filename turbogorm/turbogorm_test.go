@@ -2,7 +2,6 @@ package turbogorm
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -43,33 +42,11 @@ type TurboAuthor turbo.Turbo[*Author]
 var NewTurboAuthors = turbo.NewConstructor(func(tb *turbo.Turbo[*Author]) *TurboAuthor { return (*TurboAuthor)(tb) })
 
 func (t *TurboAuthor) Books(ctx context.Context, db *gorm.DB) ([]*TurboBook, error) {
-	return turbo.LoadRelation(ctx, t.Loader, "books", t.Model, func(ctx context.Context, authors []*Author) (turbo.RelationLookupFunc[*Author, []*TurboBook], error) {
-		var authorIDs []uint
-		for _, author := range authors {
-			authorIDs = append(authorIDs, author.ID)
-		}
-		var books []*Book
-		if err := db.Debug().Where("author_id IN (?)", authorIDs).Find(&books).Error; err != nil {
-			return nil, err
-		}
-		turboBooks := NewTurboBooks(books)
-		var booksByAuthorID = make(map[uint][]*TurboBook)
-		for _, book := range turboBooks {
-			tb := (*TurboBook)(book)
-			booksByAuthorID[*book.Model.AuthorID] = append(booksByAuthorID[*book.Model.AuthorID], tb)
-		}
-		return func(author *Author) []*TurboBook {
-			return booksByAuthorID[author.ID]
-		}, nil
-	})
-}
-
-func (t *TurboAuthor) BooksChildren(ctx context.Context, db *gorm.DB) ([]*TurboBook, error) {
-	return turbo.LoadChildren(ctx, t.Loader, "books", t.Model, turbo.LoadChildrenArgs[*Author, *Book, *TurboBook]{
+	return turbo.LoadChildren(ctx, t.Loader, "books", t.Model, turbo.LoadChildrenArgs[uint, *Author, *Book, *TurboBook]{
 		ModelIDFunc: func(author *Author) uint { return author.ID },
 		QueryChildrenFunc: func(ctx context.Context, authorIDs []uint) ([]*Book, error) {
 			var books []*Book
-			if err := db.Debug().Where("author_id IN (?)", authorIDs).Find(&books).Error; err != nil {
+			if err := db.WithContext(ctx).Debug().Where("author_id IN (?)", authorIDs).Find(&books).Error; err != nil {
 				return nil, err
 			}
 			return books, nil
@@ -80,25 +57,63 @@ func (t *TurboAuthor) BooksChildren(ctx context.Context, db *gorm.DB) ([]*TurboB
 }
 
 func (t *TurboBook) Chapters(ctx context.Context, db *gorm.DB) ([]*TurboChapter, error) {
-	return turbo.LoadRelation(ctx, t.Loader, "chapters", t.Model, func(ctx context.Context, books []*Book) (turbo.RelationLookupFunc[*Book, []*TurboChapter], error) {
-		var bookIDs []uint
+	return turbo.LoadChildren(ctx, t.Loader, "chapters", t.Model, turbo.LoadChildrenArgs[uint, *Book, *Chapter, *TurboChapter]{
+		ModelIDFunc: func(book *Book) uint { return book.ID },
+		QueryChildrenFunc: func(ctx context.Context, bookIDs []uint) ([]*Chapter, error) {
+			var chapters []*Chapter
+			if err := db.WithContext(ctx).Debug().Where("book_id IN (?)", bookIDs).Find(&chapters).Error; err != nil {
+				return nil, err
+			}
+			return chapters, nil
+		},
+		TurboConstructor: NewTurboChapters,
+		ParentIDFunc:     func(chapter *TurboChapter) uint { return chapter.Model.BookID },
+	})
+}
+
+func (t *TurboBook) Author(ctx context.Context, db *gorm.DB) (*TurboAuthor, error) {
+	return turbo.LoadRelation(ctx, t.Loader, "author", t.Model, func(ctx context.Context, books []*Book) (turbo.RelationLookupFunc[*Book, *TurboAuthor], error) {
+		var authorIDs []uint
 		for _, book := range books {
-			bookIDs = append(bookIDs, book.ID)
+			authorIDs = append(authorIDs, safePtr(book.AuthorID))
 		}
-		var chapters []*Chapter
-		if err := db.Debug().Where("book_id IN (?)", bookIDs).Find(&chapters).Error; err != nil {
+		var authors []*Author
+		if err := db.WithContext(ctx).Debug().Where("id IN (?)", authorIDs).Find(&authors).Error; err != nil {
 			return nil, err
 		}
-		turboChapters := NewTurboChapters(chapters)
-		var chaptersByBookID = make(map[uint][]*TurboChapter)
-		for _, chapter := range turboChapters {
-			tb := (*TurboChapter)(chapter)
-			chaptersByBookID[chapter.Model.BookID] = append(chaptersByBookID[chapter.Model.BookID], tb)
+		turboAuthors := NewTurboAuthors(authors)
+		turboAuthorsByID := make(map[uint]*TurboAuthor)
+		for _, author := range turboAuthors {
+			tb := (*TurboAuthor)(author)
+			turboAuthorsByID[author.Model.ID] = tb
 		}
-		return func(book *Book) []*TurboChapter {
-			return chaptersByBookID[book.ID]
+		return func(book *Book) *TurboAuthor {
+			return turboAuthorsByID[safePtr(book.AuthorID)]
 		}, nil
 	})
+}
+
+// func (t *TurboBook) Author(ctx context.Context, db *gorm.DB) (*TurboAuthor, error) {
+// 	return turbo.LoadParent(ctx, t.Loader, "author", t.Model, turbo.LoadParentArgs[uint, *Book, *Author, *TurboAuthor]{
+// 		ModelParentIDFunc: func(book *TurboBook) *uint { return book.Model.AuthorID },
+// 		QueryParentFunc: func(ctx context.Context, ids []uint) ([]*Author, error) {
+// 			var authors []*Author
+// 			if err := db.WithContext(ctx).Debug().Where("id IN (?)", ids).Find(&authors).Error; err != nil {
+// 				return nil, err
+// 			}
+// 			return authors, nil
+// 		},
+// 		TurboConstructor: NewTurboAuthors,
+// 		ParentIDFunc:     func(author *TurboAuthor) uint { return author.Model.ID },
+// 	})
+// }
+
+func safePtr[T any](v *T) T {
+	var empty T
+	if v == nil {
+		return empty
+	}
+	return *v
 }
 
 var db *gorm.DB = nil
@@ -122,35 +137,44 @@ func TestMain(m *testing.M) {
 func TestTurbogorm(t *testing.T) {
 	ctx := context.Background()
 
-	var authors []*Author
-	if err := db.Find(&authors).Error; err != nil {
-		t.Fatalf("Failed to find authors: %v", err)
-	}
+	// var authors []*Author
+	// if err := db.Find(&authors).Error; err != nil {
+	// 	t.Fatalf("Failed to find authors: %v", err)
+	// }
 
-	turboAuthors := NewTurboAuthors(authors)
-	for _, turboAuthor := range turboAuthors {
-		fmt.Println(turboAuthor.Model.Name)
-		books, err := turboAuthor.BooksChildren(ctx, db)
+	// turboAuthors := NewTurboAuthors(authors)
+	// for _, turboAuthor := range turboAuthors {
+	// 	fmt.Println(turboAuthor.Model.Name)
+	// 	books, err := turboAuthor.Books(ctx, db)
+	// 	if err != nil {
+	// 		t.Fatalf("Failed to get books: %v", err)
+	// 	}
+	// 	for _, book := range books {
+	// 		fmt.Println("  ", book.Model.Title)
+	// 		chapters, err := book.Chapters(ctx, db)
+	// 		if err != nil {
+	// 			t.Fatalf("Failed to get chapters: %v", err)
+	// 		}
+	// 		for _, chapter := range chapters {
+	// 			fmt.Println("    ", chapter.Model.Title)
+	// 		}
+	// 	}
+	// }
+
+	var books []*Book
+	if err := db.Find(&books).Error; err != nil {
+		t.Fatalf("Failed to find books: %v", err)
+	}
+	turboBooks := NewTurboBooks(books)
+	for _, book := range turboBooks {
+		author, err := book.Author(ctx, db)
 		if err != nil {
-			t.Fatalf("Failed to get books: %v", err)
+			t.Fatalf("Failed to get author: %v", err)
 		}
-		for _, book := range books {
-			fmt.Println("  ", book.Model.Title)
-			chapters, err := book.Chapters(ctx, db)
-			if err != nil {
-				t.Fatalf("Failed to get chapters: %v", err)
-			}
-			for _, chapter := range chapters {
-				fmt.Println("    ", chapter.Model.Title)
-			}
+		if author == nil {
+			fmt.Println(book.Model.Title, "by <unknown author>")
+		} else {
+			fmt.Println(book.Model.Title, "by", author.Model.Name)
 		}
 	}
-}
-
-func printJSON(v any) {
-	json, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		fmt.Println(err)
-	}
-	fmt.Println(string(json))
 }

@@ -10,10 +10,6 @@ type Turbo[TModel any] struct {
 	Loader *Loader[TModel] `json:"-"`
 }
 
-func (t *Turbo[TModel]) GetModel() TModel {
-	return t.Model
-}
-
 func NewConstructor[TModel any, TTurbo any](conv func(*Turbo[TModel]) TTurbo) func(models []TModel) []TTurbo {
 	return func(models []TModel) []TTurbo {
 		loader := &Loader[TModel]{
@@ -84,16 +80,16 @@ func LoadRelation[TModel any, TRelation any](ctx context.Context, loader *Loader
 	return promise.result(model).(TRelation), nil
 }
 
-type LoadChildrenArgs[TModel any, TRelationModel any, TRelationTurbo any] struct {
-	ModelIDFunc       func(TModel) uint
-	QueryChildrenFunc func(context.Context, []uint) ([]TRelationModel, error)
+type LoadChildrenArgs[TIdentifier comparable, TModel any, TRelationModel any, TRelationTurbo any] struct {
+	ModelIDFunc       func(TModel) TIdentifier
+	QueryChildrenFunc func(context.Context, []TIdentifier) ([]TRelationModel, error)
 	TurboConstructor  func([]TRelationModel) []TRelationTurbo
-	ParentIDFunc      func(TRelationTurbo) uint
+	ParentIDFunc      func(TRelationTurbo) TIdentifier
 }
 
-func LoadChildren[TModel any, TRelationModel any, TRelationTurbo any](ctx context.Context, loader *Loader[TModel], key string, model TModel, args LoadChildrenArgs[TModel, TRelationModel, TRelationTurbo]) ([]TRelationTurbo, error) {
+func LoadChildren[TIdentifier comparable, TModel any, TRelationModel any, TRelationTurbo any](ctx context.Context, loader *Loader[TModel], key string, model TModel, args LoadChildrenArgs[TIdentifier, TModel, TRelationModel, TRelationTurbo]) ([]TRelationTurbo, error) {
 	queryFunc := func(ctx context.Context, models []TModel) (RelationLookupFunc[TModel, any], error) {
-		modelIDs := make([]uint, 0, len(models))
+		modelIDs := make([]TIdentifier, 0, len(models))
 		for _, model := range models {
 			modelIDs = append(modelIDs, args.ModelIDFunc(model))
 		}
@@ -102,7 +98,7 @@ func LoadChildren[TModel any, TRelationModel any, TRelationTurbo any](ctx contex
 			return nil, err
 		}
 		turbos := args.TurboConstructor(children)
-		grouped := make(map[uint][]TRelationTurbo)
+		grouped := make(map[TIdentifier][]TRelationTurbo)
 		for _, turbo := range turbos {
 			parentID := args.ParentIDFunc(turbo)
 			grouped[parentID] = append(grouped[parentID], turbo)
@@ -116,6 +112,53 @@ func LoadChildren[TModel any, TRelationModel any, TRelationTurbo any](ctx contex
 		return nil, err
 	}
 	return result.([]TRelationTurbo), nil
+}
+
+type LoadParentArgs[TIdentifier comparable, TModel any, TRelationModel any, TRelationTurbo any] struct {
+	ModelParentIDFunc func(TModel) *TIdentifier
+	QueryParentFunc   func(context.Context, []TIdentifier) ([]TRelationModel, error)
+	TurboConstructor  func([]TRelationModel) []TRelationTurbo
+	ParentIDFunc      func(TRelationTurbo) TIdentifier
+}
+
+func LoadParent[TIdentifier comparable, TModel any, TRelationModel any, TRelationTurbo any](ctx context.Context, loader *Loader[TModel], key string, model TModel, args LoadParentArgs[TIdentifier, TModel, TRelationModel, TRelationTurbo]) (TRelationTurbo, error) {
+	queryFunc := func(ctx context.Context, models []TModel) (RelationLookupFunc[TModel, any], error) {
+		uniqueParentIDs := make(map[TIdentifier]struct{})
+		for _, model := range models {
+			parentID := args.ModelParentIDFunc(model)
+			if parentID != nil {
+				uniqueParentIDs[*parentID] = struct{}{}
+			}
+		}
+		parentIDs := make([]TIdentifier, 0, len(uniqueParentIDs))
+		for parentID := range uniqueParentIDs {
+			parentIDs = append(parentIDs, parentID)
+		}
+		parents, err := args.QueryParentFunc(ctx, parentIDs)
+		if err != nil {
+			return nil, err
+		}
+		turbos := args.TurboConstructor(parents)
+		indexed := make(map[TIdentifier]TRelationTurbo)
+		for _, turbo := range turbos {
+			id := args.ParentIDFunc(turbo)
+			indexed[id] = turbo
+		}
+		return func(m TModel) any {
+			var zero TRelationTurbo
+			parentID := args.ModelParentIDFunc(m)
+			if parentID == nil {
+				return zero
+			}
+			return indexed[*parentID]
+		}, nil
+	}
+	result, err := LoadRelation(ctx, loader, key, model, queryFunc)
+	if err != nil {
+		var zero TRelationTurbo
+		return zero, err
+	}
+	return result.(TRelationTurbo), nil
 }
 
 // var authorIDs []uint
