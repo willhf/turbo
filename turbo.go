@@ -5,30 +5,20 @@ import (
 	"sync"
 )
 
-// type Turbo[TModel any] struct {
-// 	Model  TModel
-// 	Loader *Loader[TModel] `json:"-"`
+// type Config struct {
+// 	BatchSize int
 // }
 
-// func NewConstructor[TModel any, TTurbo any](conv func(*Turbo[TModel]) TTurbo) func(models []TModel) []TTurbo {
-// 	return func(models []TModel) []TTurbo {
-// 		loader := &Loader[TModel]{
-// 			models:   models,
-// 			promises: make(map[string]*Promise[TModel, any]),
-// 		}
+// var DefaultConfig = Config{
+// 	BatchSize: 100,
+// }
 
-// 		// TODO: worry about batch size here
+// type Engine struct {
+// }
 
-// 		var turbos []TTurbo
-// 		for _, model := range models {
-// 			tb := &Turbo[TModel]{
-// 				Model:  model,
-// 				Loader: loader,
-// 			}
-// 			turbos = append(turbos, conv(tb))
-// 		}
-
-// 		return turbos
+// func NewEngine(config Config) *Engine {
+// 	return &Engine{
+// 		config: config,
 // 	}
 // }
 
@@ -102,12 +92,14 @@ func LoadRelation[TModel HasLoader[TModel], TRelation any](ctx context.Context, 
 }
 
 type LoadChildrenArgs[TIdentifier comparable, TModel HasLoader[TModel], TRelationModel HasLoader[TRelationModel]] struct {
+	Key               string
+	Model             TModel
 	ModelIDFunc       func(TModel) TIdentifier
 	QueryChildrenFunc func(context.Context, []TIdentifier) ([]TRelationModel, error)
 	ParentIDFunc      func(TRelationModel) TIdentifier
 }
 
-func LoadChildren[TIdentifier comparable, TModel HasLoader[TModel], TRelationModel HasLoader[TRelationModel]](ctx context.Context, key string, model TModel, args LoadChildrenArgs[TIdentifier, TModel, TRelationModel]) ([]TRelationModel, error) {
+func LoadChildren[TIdentifier comparable, TModel HasLoader[TModel], TRelationModel HasLoader[TRelationModel]](ctx context.Context, args LoadChildrenArgs[TIdentifier, TModel, TRelationModel]) ([]TRelationModel, error) {
 	queryFunc := func(ctx context.Context, models []TModel) (RelationLookupFunc[TModel, any], error) {
 		modelIDs := make([]TIdentifier, 0, len(models))
 		for _, model := range models {
@@ -127,7 +119,7 @@ func LoadChildren[TIdentifier comparable, TModel HasLoader[TModel], TRelationMod
 			return grouped[args.ModelIDFunc(m)]
 		}, nil
 	}
-	result, err := LoadRelation(ctx, key, model, queryFunc)
+	result, err := LoadRelation(ctx, args.Key, args.Model, queryFunc)
 	if err != nil {
 		return nil, err
 	}

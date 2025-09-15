@@ -48,7 +48,9 @@ func (t *Chapter) GetLoader() *turbo.Loader[*Chapter]       { return t.Loader }
 var _ turbo.HasLoader[*Chapter] = (*Chapter)(nil)
 
 func (t *Author) Books(ctx context.Context, db *gorm.DB) ([]*Book, error) {
-	return turbo.LoadChildren(ctx, "books", t, turbo.LoadChildrenArgs[uint, *Author, *Book]{
+	return turbo.LoadChildren(ctx, turbo.LoadChildrenArgs[uint, *Author, *Book]{
+		Key:         "books",
+		Model:       t,
 		ModelIDFunc: func(author *Author) uint { return author.ID },
 		QueryChildrenFunc: func(ctx context.Context, authorIDs []uint) ([]*Book, error) {
 			var books []*Book
